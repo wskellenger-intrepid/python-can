@@ -371,9 +371,27 @@ class BLFReader(MessageReader):
                     channel=channel - 1,
                 )
             elif obj_type == SERIAL_EVENT:
-                members = SerialEventStruct._make(unpack_serial_event_msg(data, pos))
+                serial_event = SerialEventStruct._make(unpack_serial_event_msg(data, pos))
+                dlc = serial_event.union[0] 
                 pos += serial_event_msg_size   
                 self.counts["serial_event"] += 1
+                temp = Message(
+                    timestamp=timestamp,
+                    is_error_frame=False,
+                    is_extended_id=True,
+                    #three bytes are arb ID
+                    arbitration_id=(serial_event.union[1]<<16)+(serial_event.union[2]<<8)+(serial_event.union[3]<<0),
+                    #length is the first byte minus three bytes for the arbitration ID
+                    dlc=serial_event.union[0]-3,
+                    #data is the rest
+                    data=serial_event.union[4:dlc+1],
+                    channel=serial_event.port,
+                )
+
+                #TODO: debug only flag?
+                temp.object_debug["obj_size"] = obj_size
+
+                yield temp
             else:
                 self.counts["unsupported_type"] += 1
 

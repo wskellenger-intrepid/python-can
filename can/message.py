@@ -45,6 +45,7 @@ class Message:  # pylint: disable=too-many-instance-attributes; OK for a datacla
         "is_rx",
         "bitrate_switch",
         "error_state_indicator",
+        "object_debug",
         "__weakref__",  # support weak references to messages
     )
 
@@ -63,6 +64,7 @@ class Message:  # pylint: disable=too-many-instance-attributes; OK for a datacla
         bitrate_switch: bool = False,
         error_state_indicator: bool = False,
         check: bool = False,
+        object_debug: dict = {},
     ):
         """
         To create a message object, simply provide any of the below attributes
@@ -88,6 +90,7 @@ class Message:  # pylint: disable=too-many-instance-attributes; OK for a datacla
         self.is_rx = is_rx
         self.bitrate_switch = bitrate_switch
         self.error_state_indicator = error_state_indicator
+        self.object_debug = object_debug  #for debugging raw message object data
 
         if data is None or is_remote_frame:
             self.data = bytearray()
@@ -148,6 +151,10 @@ class Message:  # pylint: disable=too-many-instance-attributes; OK for a datacla
                 field_strings.append(f"Channel: {self.channel}")
             except UnicodeEncodeError:
                 pass
+
+        if len(self.object_debug.items()) > 0:
+            field_strings.append(str(self.object_debug))
+            
 
         return "    ".join(field_strings).strip()
 
