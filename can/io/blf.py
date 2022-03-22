@@ -18,6 +18,7 @@ import datetime
 import time
 import logging
 from typing import List, BinaryIO, Generator, Union, Tuple, Optional, cast
+from collections import namedtuple
 
 from ..message import Message
 from ..util import len2dlc, dlc2len, channel2int
@@ -39,7 +40,8 @@ LOG = logging.getLogger(__name__)
 # bin log major, bin log minor, bin log build, bin log patch,
 # file size, uncompressed size, count of objects, count of objects read,
 # time start (SYSTEMTIME), time stop (SYSTEMTIME)
-FILE_HEADER_STRUCT = struct.Struct("<4sLBBBBBBBBQQLL8H8H")
+BLFHeader = namedtuple("BLFHeader", "signature headersize appid appmajor appminor appbuild binlogmajor binlogminor biglogbuild binlogpatch filesize filesize_uncompressed objcount objcount_read starttime endtime")
+FILE_HEADER_STRUCT = struct.Struct("<4sLBBBBBBBBQQLL16s16s")
 
 # Pad file header to this size
 FILE_HEADER_SIZE = 144
@@ -73,6 +75,13 @@ CAN_FD_MSG_64_STRUCT = struct.Struct("<BBBBLLLLLLLHBBL")
 # channel, length, flags, ecc, position, dlc, frame length, id, flags ext, data
 CAN_ERROR_EXT_STRUCT = struct.Struct("<HHLBBBxLLH2x8s")
 
+# type, datalen, port, reserved, databytes
+SerialEventStruct = namedtuple("SerialEventStruct", "flags port baudrate reserved union")
+SERIAL_EVENT_STRUCT = struct.Struct("<LLLL16s")
+#SERIAL_EVENT_GENERAL = struct.STruct("<LL")
+#SERIAL_EVENT_SINGLEBYTE
+#SERIAL_EVENT_COMPACT
+
 # commented event type, foreground color, background color, relocatable,
 # group name length, marker name length, description length
 GLOBAL_MARKER_STRUCT = struct.Struct("<LLL3xBLLL12x")
@@ -80,11 +89,20 @@ GLOBAL_MARKER_STRUCT = struct.Struct("<LLL3xBLLL12x")
 
 CAN_MESSAGE = 1
 LOG_CONTAINER = 10
+MOST25_MESSAGE = 22
+MOST_PHYSICAL_LAYER_MESSAGE = 24
+MOST_REGISTER_MESSAGE = 36
+J1708_MESSAGE = 55
+LIN_MESSAGE = 57
+FLEXRAY_MESSAGE = 66
+ETHERNET_FRAME = 71
 CAN_ERROR_EXT = 73
 CAN_MESSAGE2 = 86
+SERIAL_EVENT = 90
 GLOBAL_MARKER = 96
 CAN_FD_MESSAGE = 100
 CAN_FD_MESSAGE_64 = 101
+ETHERNET_EXTENDED_OBJ = 120
 
 NO_COMPRESSION = 0
 ZLIB_DEFLATE = 2
@@ -151,18 +169,19 @@ class BLFReader(MessageReader):
         """
         super().__init__(file, mode="rb")
         data = self.file.read(FILE_HEADER_STRUCT.size)
-        header = FILE_HEADER_STRUCT.unpack(data)
-        if header[0] != b"LOGG":
+        hdr = BLFHeader._make(FILE_HEADER_STRUCT.unpack(data))  #make a named tuple from unpacked data
+        if hdr.signature != b"LOGG":
             raise BLFParseError("Unexpected file format")
-        self.file_size = header[10]
-        self.uncompressed_size = header[11]
-        self.object_count = header[12]
-        self.start_timestamp = systemtime_to_timestamp(cast(TSystemTime, header[14:22]))
-        self.stop_timestamp = systemtime_to_timestamp(cast(TSystemTime, header[22:30]))
+        self.file_size = hdr.filesize
+        self.uncompressed_size = hdr.filesize_uncompressed
+        self.object_count = hdr.objcount
+        self.start_timestamp = systemtime_to_timestamp(struct.unpack("8H", hdr.starttime))  #start/end time are 16 bytes, made up of 8 16 bit ints
+        self.stop_timestamp = systemtime_to_timestamp(struct.unpack("8H", hdr.endtime))
         # Read rest of header
-        self.file.read(header[1] - FILE_HEADER_STRUCT.size)
+        self.file.read(hdr.headersize - FILE_HEADER_STRUCT.size)
         self._tail = b""
         self._pos = 0
+        self.counts = {"can":0, "unsupported_type":0, "serial_event":0}
 
     def __iter__(self) -> Generator[Message, None, None]:
         while True:
@@ -217,6 +236,8 @@ class BLFReader(MessageReader):
         unpack_can_fd_64_msg = CAN_FD_MSG_64_STRUCT.unpack_from
         can_fd_64_msg_size = CAN_FD_MSG_64_STRUCT.size
         unpack_can_error_ext = CAN_ERROR_EXT_STRUCT.unpack_from
+        unpack_serial_event_msg = SERIAL_EVENT_STRUCT.unpack_from
+        serial_event_msg_size = SERIAL_EVENT_STRUCT.size
 
         start_timestamp = self.start_timestamp
         max_pos = len(data)
@@ -228,6 +249,8 @@ class BLFReader(MessageReader):
             # Find next object after padding (depends on object type)
             try:
                 pos = data.index(b"LOBJ", pos, pos + 8)
+                if pos != self._pos:
+                    print("offset mismatch detected")  #this would happen if one record ended, and there was a gap before the next record
             except ValueError:
                 if pos + 8 > max_pos:
                     # Not enough data in container
@@ -347,6 +370,12 @@ class BLFReader(MessageReader):
                     data=data[pos : pos + valid_bytes],
                     channel=channel - 1,
                 )
+            elif obj_type == SERIAL_EVENT:
+                members = SerialEventStruct._make(unpack_serial_event_msg(data, pos))
+                pos += serial_event_msg_size   
+                self.counts["serial_event"] += 1
+            else:
+                self.counts["unsupported_type"] += 1
 
             pos = next_pos
 
